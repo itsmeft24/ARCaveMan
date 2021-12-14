@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <vector>
 #include "filesystem.h"
+#include "filesystem_search.h"
 #include <fstream>
 #include <zstd.h>
 #include <algorithm>
@@ -32,6 +33,21 @@
 
 //template<typename T> constexpr auto READ_INTO_VEC_CONSTEXPR(std::istream& stream, unsigned long long count, std::vector<T> vec) { return vec.resize(count); stream.read((char*)&vec[0], vec.size() * sizeof(T)); }
 
+std::string replace_all(std::string data, const std::string& toSearch, const std::string& replaceStr)
+{
+	// Get the first occurrence
+	size_t pos = data.find(toSearch);
+	// Repeat till end is reached
+	while (pos != std::string::npos)
+	{
+		// Replace this occurrence of Sub String
+		data.replace(pos, toSearch.size(), replaceStr);
+		// Get the next occurrence from the current position
+		pos = data.find(toSearch, pos + replaceStr.size());
+	}
+	return data;
+}
+
 struct ArcHeader {
 	uint64_t	magic;
 	uint64_t	stream_offset;
@@ -54,7 +70,7 @@ typedef FileSystemCompressedTableHeader FileSystemSearchCompressedTableHeader;
 class FileSystem {
 public:
 	FileSystemHeader file_system_header;
-	char extra_data[0xA8];
+	char extra_data[0x50];
 	StreamHeader stream_header;
 	std::vector<QuickDir> quick_dirs;
 	std::vector<HashToIndex> stream_hash_to_entries;
@@ -81,7 +97,8 @@ public:
 		std::cout << "[ARCaveMan::FileSystem] Parsing data from std::istream buffer..." << std::endl;
 		//stream.read((char*)&FileSystemHeader, sizeof(FileSystemHeader));
 		stream.read(INTO(file_system_header));
-		stream.read(extra_data, 0xA8);
+		stream.seekg(0x58, std::ios_base::cur);
+		stream.read(extra_data, 0x50);
 		stream.read(INTO(stream_header));
 
 		// READ_INTO_VEC_CONSTEXPR<QuickDir>(stream, StreamHeader.quick_dir_count, quick_dirs);
@@ -139,7 +156,8 @@ public:
 		uint64_t pos = 0;
 
 		MEMCPY_INTO(buf, file_system_header, pos);
-		memcpy(extra_data, buf, 0xA8); pos += 0xA8;
+		pos += 0x58;
+		memcpy(extra_data, buf, 0x50); pos += 0x50;
 		MEMCPY_INTO(buf, stream_header, pos);
 
 		// READ_INTO_VEC_CONSTEXPR<QuickDir>(stream, StreamHeader.quick_dir_count, quick_dirs);
@@ -176,7 +194,11 @@ public:
 
 		MEMCPY_INTO_VEC(FILEDATAS_ITER, file_datas, FileData, buf, pos);
 
+		std::cout << "[ARCaveMan::FileSystem] Reading into extra_data from pos=" << pos << " and its length is " << size - pos;
+
 		MEMCPY_INTO_VEC(size - pos, extra_data_end, uint8_t, buf, pos);
+
+		
 
 		//extra_data_end = new char[size - pos];
 
@@ -190,7 +212,8 @@ public:
 		std::cout << "[ARCaveMan::FileSystem::Write] Started export process..." << std::endl;
 		std::ofstream file(path, std::ios::out | std::ios::binary);
 		file.write(FROM(file_system_header));
-		file.write(extra_data, 0xA8);
+		file.write(FROM(file_system_header));
+		file.write(extra_data, 0x50);
 		file.write(FROM(stream_header));
 		
 		WRITE_FROM_VEC(file, quick_dirs);
@@ -219,7 +242,7 @@ public:
 
 		auto stop = std::chrono::high_resolution_clock::now();
 		auto duration = std::chrono::duration_cast<std::chrono::microseconds>(stop - start);
-		std::cout << "[ARCaveMan::FileSystem::Write] Finished writing file system to " << path << " in " << duration.count() << "μs." << std::endl;
+		std::cout << "[ARCaveMan::FileSystem::Write] Finished writing file system to " << path << " in " << duration.count() << "ms." << std::endl;
 	}
 	
 	// writes to buffer then compresses to zstd then writes to file. returns compressed size.
@@ -236,7 +259,8 @@ public:
 		char* buffer = new char[SIZE]; uint64_t pos = 0;
 
 		MEMCPY_FROM(buffer, file_system_header, pos);
-		memcpy(buffer+pos, extra_data, 0xA8); pos += 0xA8;
+		MEMCPY_FROM(buffer, file_system_header, pos);
+		memcpy(buffer+pos, extra_data, 0x50); pos += 0x50;
 		MEMCPY_FROM(buffer, stream_header, pos);
 
 		MEMCPY_FROM_VEC(buffer, pos, quick_dirs);
@@ -331,6 +355,79 @@ public:
 	}*/
 };
 
+class FileSystemSearch {
+public:
+	FileSystemSearchHeader file_system_search_header;
+	std::vector<HashToIndex> folder_path_to_index;
+	std::vector<FolderPathListEntry> folder_path_list;
+	std::vector<HashToIndex> path_to_index;
+	std::vector<uint32_t> path_list_indices;
+	std::vector<PathListEntry> path_list;
+	FileSystemSearch(std::istream& stream) {
+		std::cout << "[ARCaveMan::FileSystemSearch] Parsing data from std::istream buffer..." << std::endl;
+		
+		stream.read(INTO(file_system_search_header));
+
+		READ_INTO_VEC(stream, file_system_search_header.folder_path_to_index_count, folder_path_to_index, HashToIndex);
+		READ_INTO_VEC(stream, file_system_search_header.folder_path_to_index_count, folder_path_list, FolderPathListEntry);
+		READ_INTO_VEC(stream, file_system_search_header.unk3, path_to_index, HashToIndex);
+		READ_INTO_VEC(stream, file_system_search_header.unk4, path_list_indices, uint32_t);
+		READ_INTO_VEC(stream, file_system_search_header.unk3, path_list, PathListEntry);
+	}
+	FileSystemSearch(char* buf, uint64_t size) {
+		std::cout << "[ARCaveMan::FileSystemSearch] Parsing data from char array (buffer)..." << std::endl;
+		uint64_t pos = 0;
+
+		MEMCPY_INTO(buf, file_system_search_header, pos);
+
+		MEMCPY_INTO_VEC(file_system_search_header.folder_path_to_index_count, folder_path_to_index, HashToIndex, buf, pos);
+		MEMCPY_INTO_VEC(file_system_search_header.folder_path_to_index_count, folder_path_list, FolderPathListEntry, buf, pos);
+		MEMCPY_INTO_VEC(file_system_search_header.unk3, path_to_index, HashToIndex, buf, pos);
+		MEMCPY_INTO_VEC(file_system_search_header.unk3, path_list_indices, uint32_t, buf, pos);
+		MEMCPY_INTO_VEC(file_system_search_header.unk4, path_list, PathListEntry, buf, pos);
+
+	}
+	FileSystemSearch() {}
+	void write(std::string path) {
+		std::cout << "[ARCaveMan::FileSystemSearch::Write] Started export process..." << std::endl;
+		std::ofstream file(path, std::ios::out | std::ios::binary);
+
+		file.write(FROM(file_system_search_header));
+
+		WRITE_FROM_VEC(file, folder_path_to_index);
+		WRITE_FROM_VEC(file, folder_path_list);
+		WRITE_FROM_VEC(file, path_to_index);
+		WRITE_FROM_VEC(file, path_list_indices);
+		WRITE_FROM_VEC(file, path_list);
+	}
+	uint64_t write_compressed(std::string path) {
+		std::cout << "[ARCaveMan::FileSystemSearch::Write] Started export process..." << std::endl;
+		uint64_t SIZE = sizeof(file_system_search_header) + VEC_SIZE(folder_path_to_index) + VEC_SIZE(folder_path_list) +
+			VEC_SIZE(path_to_index) + VEC_SIZE(path_list_indices) + VEC_SIZE(path_list);
+
+		char* buffer = new char[SIZE]; uint64_t pos = 0;
+
+		MEMCPY_FROM(buffer, file_system_search_header, pos);
+
+		MEMCPY_FROM_VEC(buffer, pos, folder_path_to_index);
+		MEMCPY_FROM_VEC(buffer, pos, folder_path_list);
+		MEMCPY_FROM_VEC(buffer, pos, path_to_index);
+		MEMCPY_FROM_VEC(buffer, pos, path_list_indices);
+		MEMCPY_FROM_VEC(buffer, pos, path_list);
+
+		char* buffer_out = new char[SIZE];
+		std::cout << "[ARCaveMan::FileSystem::Write] Compressing data.arc file system..." << std::endl;
+		uint64_t out_size = ZSTD_compress(buffer_out, SIZE, buffer, SIZE, ZSTD_maxCLevel());
+		delete[] buffer;
+		std::cout << "[ARCaveMan::FileSystem::Write] Writing data.arc file system to " << path << "..." << std::endl;
+		std::ofstream file(path, std::ios::out | std::ios::binary);
+		file.write(buffer_out, out_size);
+		file.close();
+		delete[] buffer_out;
+		return out_size;
+	}
+};
+
 bool bucket_sorter(const HashToIndex& x, const HashToIndex& y) {
 	return x.as_hash40().as_u64() < y.as_hash40().as_u64();
 }
@@ -338,14 +435,18 @@ bool bucket_sorter(const HashToIndex& x, const HashToIndex& y) {
 class Arc {
 public:
 	ArcHeader arc_header;
-	FileSystem file_system;
 	FileSystemCompressedTableHeader file_system_comp_table_header;
+	FileSystem file_system;
+	FileSystemSearchCompressedTableHeader file_system_search_comp_table_header;
+	FileSystemSearch file_system_search;
+	
 	Arc(std::string path) {
 		std::cout << "[ARCaveMan::ARC] Opening data.arc..." << std::endl;
 		std::ifstream file(path, std::ios::in | std::ios::binary);
 		file.read(INTO(arc_header));
 		file.seekg(arc_header.file_system_offset);
-		
+
+		//filesystem
 		file.read(INTO(file_system_comp_table_header));
 		char* comp_data = new char[file_system_comp_table_header.comp_size];
 		char* decomp_data = new char[file_system_comp_table_header.decomp_size];
@@ -353,24 +454,35 @@ public:
 		std::cout << "[ARCaveMan::ARC] Decompressing file system data..." << std::endl;
 		if (ZSTD_isError(ZSTD_decompress(decomp_data, file_system_comp_table_header.decomp_size, comp_data, file_system_comp_table_header.comp_size)))
 			std::cout << "[ARCaveMan::ARC] Failed to decompress file system data.";;
-		std::ofstream dmp("dump.fs", std::ios::out | std::ios::binary);
-		dmp.write(decomp_data, file_system_comp_table_header.decomp_size);
-		dmp.close();
 		delete[] comp_data;
 		std::cout << "[ARCaveMan::ARC] Initializing file system..." << std::endl;
 		file_system = { decomp_data, file_system_comp_table_header.decomp_size };
 		delete[] decomp_data;
+
+		// filesystemsearch
+		file.seekg(arc_header.file_system_search_offset);
+		file.read(INTO(file_system_search_comp_table_header));
+		comp_data = new char[file_system_search_comp_table_header.comp_size];
+		decomp_data = new char[file_system_search_comp_table_header.decomp_size];
+		file.read(comp_data, file_system_search_comp_table_header.comp_size);
+		std::cout << "[ARCaveMan::ARC] Decompressing file system search data..." << std::endl;
+		if (ZSTD_isError(ZSTD_decompress(decomp_data, file_system_search_comp_table_header.decomp_size, comp_data, file_system_search_comp_table_header.comp_size)))
+			std::cout << "[ARCaveMan::ARC] Failed to decompress file system search data.";;
+		delete[] comp_data;
+		std::cout << "[ARCaveMan::ARC] Initializing file system search..." << std::endl;
+		file_system_search = { decomp_data, file_system_search_comp_table_header.decomp_size };
+		delete[] decomp_data;
+
+		file_system_search.write("dump_fs_search.tbl");
+
 		file.close();
 		std::cout << "[ARCaveMan::ARC] Completed ARC Initialization." << std::endl;
-		//file_system.write("output_fs.tbl");
 
 	}
 	
 	void REBUILD_FILEINFOBUCKETS() {
 		std::cout << "[ARCaveMan::FileInfoBuckets] Rebuilding FileInfoBuckets..." << std::endl;
 		std::vector<std::vector<HashToIndex>> buckets(file_system.bucket_count);
-
-		//buckets.reserve(file_system.bucket_count); // fix it
 
 		for (int x = 0; x < file_system.file_paths.size(); x++) {
 			const auto& file_path = file_system.file_paths[x];
@@ -394,6 +506,16 @@ public:
 		}
 	}
 	
+	void REBUILD_DIR_HASH_TO_INFO_INDEX() {
+		std::cout << "[ARCaveMan::DirHashToInfoIndex] Rebuilding DirHashToInfoIndices..." << std::endl;
+		file_system.dir_hash_to_info_index.clear();
+		for (int x = 0; x < file_system.dir_infos.size(); x++) {
+			const auto& dir_info = file_system.dir_infos[x];
+			auto hashtoidx = HashToIndex::from_hash40(dir_info.path.as_hash40(), x);
+			file_system.dir_hash_to_info_index.push_back(hashtoidx);
+		}
+	}
+
 	FileInfoToFileData& get_fileinfotodata(FileInfo& fileinfo) {
 		return file_system.file_info_to_datas[(uint64_t)fileinfo.info_to_data_index + fileinfo.flags.is_regional * 2];
 	}
@@ -402,7 +524,7 @@ public:
 		return file_system.file_datas[get_fileinfotodata(fileinfo).file_data_index];
 	}
 	
-	StreamData& stream_lookup_by_hash(Hash40 & hash) {
+	StreamData& stream_lookup_by_hash(Hash40 hash) {
 		for(const auto& entry : file_system.stream_entries){
 			if (entry.hash == hash.crc) {
 				return file_system.stream_datas[file_system.stream_file_indices[entry.index]];
@@ -639,12 +761,17 @@ public:
 		// hype
 		auto dir_hash = Hash40::from_str("fighter/pickel/c00");
 		auto dirinfo_index = get_dir_info_index_from_path_hash(dir_hash);
+		
+		auto& old_dirinfo = file_system.dir_infos[dirinfo_index];
+		auto& old_diroffset = file_system.folder_offsets[old_dirinfo.path.index];
+		
 		auto new_dirinfo = file_system.dir_infos[dirinfo_index];
 		auto new_diroffset = file_system.folder_offsets[new_dirinfo.path.index];
 
 		new_diroffset.file_start_index = file_system.file_datas.size();
+		new_dirinfo.file_info_start_index = file_system.file_infos.size();
 
-		file_system.dir_hash_to_info_index.push_back(HashToIndex::from_hash40(Hash40::from_str("fighter/pickel/c08"), (uint32_t)file_system.dir_infos.size()));
+		//file_system.dir_hash_to_info_index.push_back(HashToIndex::from_hash40(Hash40::from_str("fighter/pickel/c08"), (uint32_t)file_system.dir_infos.size()));
 
 		new_dirinfo.name = Hash40::from_str("c08");
 		new_dirinfo.path = HashToIndex::from_hash40(Hash40::from_str("fighter/pickel/c08"), (uint32_t)file_system.folder_offsets.size());
@@ -652,15 +779,13 @@ public:
 
 		file_system.dir_infos.push_back(new_dirinfo);
 		file_system.folder_child_hashes.push_back(HashToIndex::from_hash40(Hash40::from_str("fighter/pickel/c08"), (uint32_t)file_system.dir_infos.size() - 1));
-		// self.FileSystem.dir_infos[-1].file_info_start_index = len(self.FileSystem.file_infos);
-		auto new_file_info_start_index = file_system.file_infos.size();
+
 		for (int iter = 0; iter < new_dirinfo.file_count; iter++) {
-			auto base_fileinfo = file_system.file_infos[new_dirinfo.file_info_start_index + iter];
-			auto FPI = base_fileinfo.file_path_index;
-			auto FP = file_system.file_paths[FPI];
-			//auto new_path = Hashes::unhash_from_labels(FP.path.as_hash40()).replace("c00", "c08");
-			//auto new_parent = Hashes::unhash_from_labels(FP.parent.as_hash40()).replace("c00", "c08");
-			//file_in_dir_addition(new_dirinfo, base_fileinfo, new_path, Hashes::unhash_from_labels(FP.ext.as_hash40()), new_parent, Hashes::unhash_from_labels(FP.file_name.as_hash40()));
+			auto base_fileinfo = file_system.file_infos[(uint64_t)new_dirinfo.file_info_start_index + iter];
+			auto& FP = file_system.file_paths[base_fileinfo.file_path_index];
+			auto new_path = replace_all(Hashes::unhash_from_labels(FP.path.as_hash40()), "c00", "c08");
+			auto new_parent = replace_all(Hashes::unhash_from_labels(FP.parent.as_hash40()), "c00", "c08");
+			file_in_dir_addition(file_system.dir_infos[-1], base_fileinfo, new_path, Hashes::unhash_from_labels(FP.ext.as_hash40()), new_parent, Hashes::unhash_from_labels(FP.file_name.as_hash40()));
 		}
 	}
 

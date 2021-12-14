@@ -27,6 +27,10 @@ namespace Hashes {
 	void init() {
 		std::cout << "[ARCaveMan::Hashes] Initalizing hashmap from hashes.txt..." << std::endl;
 		std::ifstream label_file("hashes.txt", std::ios::in);
+		if (!label_file) {
+			std::cout << "[ARCaveMan::Hashes] Could not find hashes.txt. Aborting..." << std::endl;
+			return;
+		}
 		std::string line;
 		while (std::getline(label_file, line)) {
 			MAP.insert(std::make_pair(Hash40::from_str(line).as_u64(), line));
