@@ -7,6 +7,7 @@
 #include <zstd.h>
 #include <algorithm>
 #include <chrono>
+#include <assert.h>
 
 // lazy macro lol
 
@@ -194,7 +195,7 @@ public:
 
 		MEMCPY_INTO_VEC(FILEDATAS_ITER, file_datas, FileData, buf, pos);
 
-		std::cout << "[ARCaveMan::FileSystem] Reading into extra_data from pos=" << pos << " and its length is " << size - pos;
+		std::cout << "[ARCaveMan::FileSystem] Reading into extra_data from pos=" << pos << " and its length is " << size - pos << std::endl;
 
 		MEMCPY_INTO_VEC(size - pos, extra_data_end, uint8_t, buf, pos);
 
@@ -453,7 +454,7 @@ public:
 		file.read(comp_data, file_system_comp_table_header.comp_size);
 		std::cout << "[ARCaveMan::ARC] Decompressing file system data..." << std::endl;
 		if (ZSTD_isError(ZSTD_decompress(decomp_data, file_system_comp_table_header.decomp_size, comp_data, file_system_comp_table_header.comp_size)))
-			std::cout << "[ARCaveMan::ARC] Failed to decompress file system data.";;
+			std::cout << "[ARCaveMan::ARC] Failed to decompress file system data." << std::endl;
 		delete[] comp_data;
 		std::cout << "[ARCaveMan::ARC] Initializing file system..." << std::endl;
 		file_system = { decomp_data, file_system_comp_table_header.decomp_size };
@@ -467,7 +468,7 @@ public:
 		file.read(comp_data, file_system_search_comp_table_header.comp_size);
 		std::cout << "[ARCaveMan::ARC] Decompressing file system search data..." << std::endl;
 		if (ZSTD_isError(ZSTD_decompress(decomp_data, file_system_search_comp_table_header.decomp_size, comp_data, file_system_search_comp_table_header.comp_size)))
-			std::cout << "[ARCaveMan::ARC] Failed to decompress file system search data.";;
+			std::cout << "[ARCaveMan::ARC] Failed to decompress file system search data." << std::endl;
 		delete[] comp_data;
 		std::cout << "[ARCaveMan::ARC] Initializing file system search..." << std::endl;
 		file_system_search = { decomp_data, file_system_search_comp_table_header.decomp_size };
@@ -580,6 +581,15 @@ public:
 		}
 	}
 	
+	uint32_t get_shared_file(Hash40 hash) {
+		auto& file_info = file_lookup_by_hash(hash);
+		auto new_hash = file_system.file_paths[file_info.file_path_index].path.as_hash40();
+		if (new_hash == hash)
+			return file_info.file_path_index;
+		else
+			return get_shared_file(new_hash);
+	}
+
 	DirectoryOffset get_dir_offset_from_fileinfo(FileInfo& fileinfo) {
 		auto& file_info_to_data = get_fileinfotodata(fileinfo);
 		auto folder_offset_index = file_info_to_data.folder_offset_index;
@@ -590,6 +600,10 @@ public:
 		return file_system.folder_offsets[dir_info.path.index];
 	}
 	
+	std::string get_string_from_fileinfo(FileInfo& fileinfo) {
+		return Hashes::unhash_from_labels(file_system.file_paths[fileinfo.file_path_index].path.as_hash40());
+	}
+
 	//  Works for files directly referenced, but not ones used as part of a directory where all of the files are grabbed at once.
 	void addition(FileInfo& base_fileinfo, std::string full_path, std::string extension, std::string directory_path, std::string file_name) {
 		auto base_file_info_flags = base_fileinfo.flags;
@@ -610,19 +624,13 @@ public:
 			HashToIndex::from_hash40(Hash40::from_str(extension), 0),
 			HashToIndex::from_hash40(Hash40::from_str(directory_path), 0),
 			HashToIndex::from_hash40(Hash40::from_str(file_name), 0)
-			// HashToIndex::from_hash40(Hash40::from_str("ui/replace/chara/chara_7/chara_7_koopag_00.bntx"), file_system.file_info_indices.size())),
-			// HashToIndex::from_hash40(Hash40::from_str("bntx"), 0),
-			// HashToIndex::from_hash40(Hash40::from_str("ui/replace/chara/chara_7/"), 0),
-			// HashToIndex::from_hash40(Hash40::from_str("chara_7_koopag_00.bntx"), 0)
 		};
 
 		file_system.file_paths.push_back(file_path);
 
-		//REBUILD_FILEINFOBUCKETS();
-
 		// if it looks confusing why we subtract one its for a reason
 		// subtract one from an array length bc we already push_backed, and thats the idx that will be referenced
-		FileInfoIndex file_info_index = { base_dir_offset_index, (uint32_t)file_system.file_infos.size() }; // swiped dir offset index from mario.
+		FileInfoIndex file_info_index = { base_dir_offset_index, (uint32_t)file_system.file_infos.size() };
 
 		file_system.file_info_indices.push_back(file_info_index);
 
@@ -645,17 +653,27 @@ public:
 		file_system.file_system_header.file_data_count++;
 		std::cout << "[ARCaveMan::Addition] Added " << full_path << " to data.arc using Generic file addition." << std::endl;
 	}
-	// std::string dir_info_name,
+
 	void file_in_dir_addition(std::string dir_info_name, FileInfo& base_fileinfo, std::string full_path, std::string extension, std::string directory_path, std::string file_name) {
 		file_in_dir_addition(get_dir_info_from_path_hash(Hash40::from_str(dir_info_name)), base_fileinfo, full_path, extension, directory_path, file_name);
 	}
 	
 	void file_in_dir_addition(DirInfo& dirinfo, FileInfo& base_fileinfo, std::string full_path, std::string extension, std::string directory_path, std::string file_name) {
-		//auto dir_hash = Hash40::from_str(dir_info_name);
-		
-		//auto& dirinfo = get_dir_info_from_path_hash(dir_hash);
 
+		Hashes::push(full_path);
 		auto& diroffset = get_dir_offset_from_dir_info(dirinfo);
+		/*
+		if (dirinfo.flags.redirected) {
+			auto directory_index = file_system.folder_offsets[dirinfo.path.index].directory_index;
+			if (directory_index != 0xFFFFFF) {
+				
+				if (dirinfo.flags.is_symlink) {
+					dirinfo_cpy = file_system.dir_infos[directory_index]; // Intermediate DirInfo ?
+				}
+				
+			}
+		}
+		*/
 
 		dirinfo.file_count++;
 		diroffset.file_count++;
@@ -672,19 +690,15 @@ public:
 		for (auto& entry : file_system.dir_infos) {
 			if (entry.file_info_start_index > dirinfo.file_info_start_index)
 				entry.file_info_start_index++;
-			if (entry.flags.redirected) {
-				auto directory_index = file_system.folder_offsets[entry.path.index].directory_index;
-				if (directory_index != 0xFFFFFF) {
-					/*
-					if (dir_info.flags.is_symlink) {
-						return &file_system.dir_infos[directory_index]; // Intermediate DirInfo ?
-					}
-					*/
-					if (!entry.flags.is_symlink) {
-						if (file_system.folder_offsets[directory_index].file_start_index > dirinfo.file_info_start_index)
-							file_system.folder_offsets[directory_index].file_start_index++;
-					}
+			auto directory_index = file_system.folder_offsets[entry.path.index].directory_index;
+			if (entry.flags.redirected && directory_index != 0xFFFFFF && !entry.flags.is_symlink) {
+				/*
+				if (dir_info.flags.is_symlink) {
+					return &file_system.dir_infos[directory_index]; // Intermediate DirInfo ?
 				}
+				*/
+				if (file_system.folder_offsets[directory_index].file_start_index > dirinfo.file_info_start_index)
+					file_system.folder_offsets[directory_index].file_start_index++;
 			}
 			else {
 				auto& dir_offset_entry = get_dir_offset_from_dir_info(entry);
@@ -692,12 +706,7 @@ public:
 					dir_offset_entry.file_start_index++;
 			}
 		}
-		/*
-		for (auto& entry : file_system.folder_offsets) { // will not work.
-			if (entry.file_start_index > diroffset.file_start_index)
-				entry.file_start_index++;
-		}
-		*/
+
 		auto fileinfo_insert_index = dirinfo.file_info_start_index + dirinfo.file_count - 1; // subtracted 1 since it was incremented above
 		auto filedata_insert_index = diroffset.file_start_index + diroffset.file_count - 1; // subtracted 1 since it was incremented above
 
@@ -705,7 +714,7 @@ public:
 		auto base_file_info_flags = base_fileinfo.flags;
 		auto& base_file_info_to_data = get_fileinfotodata(base_fileinfo);
 
-		auto base_dir_offset_index = dirinfo.path.index; // base_file_info_to_data.folder_offset_index;
+		auto base_dir_offset_index = dirinfo.path.index;
 		auto base_load_type = base_file_info_to_data.load_type;
 
 		auto& base_filedata = fileinfo_to_filedata(base_fileinfo);
@@ -720,25 +729,19 @@ public:
 			HashToIndex::from_hash40(Hash40::from_str(extension), 0),
 			HashToIndex::from_hash40(Hash40::from_str(directory_path), 0),
 			HashToIndex::from_hash40(Hash40::from_str(file_name), 0)
-			// HashToIndex::from_hash40(Hash40::from_str("ui/replace/chara/chara_7/chara_7_koopag_00.bntx"), file_system.file_info_indices.size())),
-			// HashToIndex::from_hash40(Hash40::from_str("bntx"), 0),
-			// HashToIndex::from_hash40(Hash40::from_str("ui/replace/chara/chara_7/"), 0),
-			// HashToIndex::from_hash40(Hash40::from_str("chara_7_koopag_00.bntx"), 0)
 		};
 
 		file_system.file_paths.push_back(file_path);
 
-		//REBUILD_FILEINFOBUCKETS();
-
 		// if it looks confusing why we subtract one its for a reason
 		// subtract one from an array length bc we already push_backed, and thats the idx that will be referenced
-		FileInfoIndex file_info_index = { base_dir_offset_index, (uint32_t)file_system.file_infos.size() }; // swiped dir offset index from mario.
+		FileInfoIndex file_info_index = { base_dir_offset_index, fileinfo_insert_index };
 
 		file_system.file_info_indices.push_back(file_info_index);
 
 		FileInfo file_info = { file_system.file_paths.size() - 1, file_system.file_info_indices.size() - 1, file_system.file_info_to_datas.size(), base_file_info_flags };
 
-		file_system.file_infos.insert(file_system.file_infos.begin() + fileinfo_insert_index, file_info);// file_system.file_infos.push_back(file_info);
+		file_system.file_infos.insert(file_system.file_infos.begin() + fileinfo_insert_index, file_info);
 
 		FileInfoToFileData file_info_to_data = { base_dir_offset_index, filedata_insert_index, fileinfo_insert_index, base_load_type };
 
@@ -746,7 +749,7 @@ public:
 
 		FileData file_data = { base_offset_in_folder, base_comp_size, base_decomp_size, base_file_data_flags };
 
-		file_system.file_datas.insert(file_system.file_datas.begin() + filedata_insert_index, file_data); // file_system.file_datas.push_back(file_data);
+		file_system.file_datas.insert(file_system.file_datas.begin() + filedata_insert_index, file_data);
 
 		file_system.hash_index_group_count++;
 		file_system.file_system_header.file_info_path_count++;
@@ -754,10 +757,51 @@ public:
 		file_system.file_system_header.file_info_count++;
 		file_system.file_system_header.file_info_sub_index_count++;
 		file_system.file_system_header.file_data_count++;
+
+		for (auto& info_to_data : file_system.file_info_to_datas) {
+			if (info_to_data.file_info_idx > fileinfo_insert_index)
+				info_to_data.file_info_idx++;
+			if (info_to_data.file_data_index > filedata_insert_index)
+				info_to_data.file_data_index++;
+		}
+		
+		for (auto& file_info_index : file_system.file_info_indices) {
+			if (file_info_index.file_info_index > fileinfo_insert_index)
+				file_info_index.file_info_index++;
+		}
+
 		std::cout << "[ARCaveMan::Addition] Added " << full_path << " to " << Hashes::unhash_from_labels(dirinfo.path.as_hash40()) << " in data.arc using File-In-Directory file addition." << std::endl;
 	}
+	
+	void print_dirinfos(DirInfo dirinfo) {
+		
 
-	void directory_addition(std::string base_dir_path, std::string base_dir_name, std::string new_dir_path, std::string_new_dir_name) {
+		if (dirinfo.flags.redirected) {
+			
+			auto directory_index = file_system.folder_offsets[dirinfo.path.index].directory_index;
+			if (directory_index != 0xFFFFFF) {
+				if (dirinfo.flags.is_symlink) {
+					std::cout << "turns out " << Hashes::unhash_from_labels(dirinfo.path.as_hash40()) << " is redirected.  its redirected path is: " << Hashes::unhash_from_labels(file_system.dir_infos[directory_index].path.as_hash40()) << std::endl;
+					dirinfo = file_system.dir_infos[directory_index]; //Intermediate DirInfo ?
+				}
+			}
+		}
+
+		std::cout << "Directory: " << Hashes::unhash_from_labels(dirinfo.path.as_hash40()) << std::endl;
+
+		for (int x = 0; x < dirinfo.file_count; x++) {
+			auto path_hash = file_system.file_paths[file_system.file_infos[dirinfo.file_info_start_index + x].file_path_index].path.as_hash40();
+			std::cout << "File: " << Hashes::unhash_from_labels(path_hash) << std::endl;
+		}
+
+		for (int x = 0; x < dirinfo.child_dir_count; x++) {
+			print_dirinfos(file_system.dir_infos[dirinfo.child_dir_start_index + x]);
+		}
+
+		//std::cout << Hashes::unhash_from_labels(dirinfo.path.as_hash40()) << std::endl;
+	}
+
+	void directory_addition(std::string base_dir_path, std::string base_dir_name, std::string new_dir_path, std::string new_dir_name) {
 	    // hype
 	    // this DOES NOT WORK as it does not account for redirection which is like super important
 	    // also it does not edit the parent hashes, which is also super important
@@ -789,22 +833,33 @@ public:
 	    file_system.folder_child_hashes.push_back(HashToIndex::from_hash40(Hash40::from_str(new_dir_path), (uint32_t)file_system.dir_infos.size() - 1)); // potentially not needed? maybe
 
 	    for (int iter = 0; iter < old_dirinfo.file_count; iter++) { // add all files in the original directory to the new directory.
-		auto fileinfo = file_system.file_infos[(uint64_t)new_dirinfo.file_info_start_index + iter];
-		auto& FP = file_system.file_paths[base_fileinfo.file_path_index];
-		auto new_path = replace_all(Hashes::unhash_from_labels(FP.path.as_hash40()), base_dir_name, new_dir_name);
-		auto new_parent = replace_all(Hashes::unhash_from_labels(FP.parent.as_hash40()  ), base_dir_name, new_dir_name);
-		file_in_dir_addition(file_system.dir_infos[-1], fileinfo, new_path, Hashes::unhash_from_labels(FP.ext.as_hash40()), new_parent, Hashes::unhash_from_labels(FP.file_name.as_hash40()));
+			auto fileinfo = file_system.file_infos[(uint64_t)new_dirinfo.file_info_start_index + iter];
+			auto& FP = file_system.file_paths[fileinfo.file_path_index];
+			auto new_path = replace_all(Hashes::unhash_from_labels(FP.path.as_hash40()), base_dir_name, new_dir_name);
+			auto new_parent = replace_all(Hashes::unhash_from_labels(FP.parent.as_hash40()  ), base_dir_name, new_dir_name);
+			file_in_dir_addition(file_system.dir_infos[-1], fileinfo, new_path, Hashes::unhash_from_labels(FP.ext.as_hash40()), new_parent, Hashes::unhash_from_labels(FP.file_name.as_hash40()));
 	    }
 
-	    for (int iter = 0; iter < old_dirinfo.child_dir_count) {
-		auto child_dir_base_path = Hashes::unhash_from_labels(file_system.dir_infos[old_dirinfo.child_dir_start_index + iter].path.as_hash40());
-		auto child_dir_base_name = Hashes::unhash_from_labels(file_system.dir_infos[old_dirinfo.child_dir_start_index + iter].name.as_hash40());
-		directory_addition(child_dir_base_path, child_dir_base_name, replace_all(child_dir_base_path, base_dir_name, new_dir_name), replace_all(child_dir_base_name, base_dir_name, new_dir_name));
+		for (int iter = 0; iter < old_dirinfo.child_dir_count; iter++) {
+			auto child_dir_base_path = Hashes::unhash_from_labels(file_system.dir_infos[old_dirinfo.child_dir_start_index + iter].path.as_hash40());
+			auto child_dir_base_name = Hashes::unhash_from_labels(file_system.dir_infos[old_dirinfo.child_dir_start_index + iter].name);
+			directory_addition(child_dir_base_path, child_dir_base_name, replace_all(child_dir_base_path, base_dir_name, new_dir_name), replace_all(child_dir_base_name, base_dir_name, new_dir_name));
 	    }
 
 	}
 
 	void expand_compressed_size() {
 		// fard
+	}
+
+	void print_all_symlinked_dirs() {
+		for (const auto& elem : file_system.dir_infos) {
+			if (elem.flags.is_symlink) {
+				std::cout << "Directory: " << Hashes::unhash_from_labels(elem.path.as_hash40()) << " is symlinked with: "
+					<< Hashes::unhash_from_labels(file_system.dir_infos[file_system.folder_offsets[elem.path.index].directory_index].path.as_hash40())
+					<< std::endl;
+			}
+
+		}
 	}
 };

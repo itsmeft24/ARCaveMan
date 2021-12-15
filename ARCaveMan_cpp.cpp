@@ -58,7 +58,7 @@ void file_in_dir_addition_test(Arc& arc) {
         "fighter/pickel/model/body/c00/steve.nutexb",
         "nutexb",
         "fighter/pickel/model/body/c00/",
-        "steve"
+        "steve.nutexb"
     );
 
     arc.REBUILD_FILEINFOBUCKETS();
@@ -114,6 +114,9 @@ int main()
     Hashes::init();
 
     file_in_dir_addition_test(arc);
+
+
+    //arc.print_dirinfos(arc.get_dir_info_from_path_hash(Hash40::from_str("fighter/pickel/c00")));
 
     auto stop = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(stop - start);
