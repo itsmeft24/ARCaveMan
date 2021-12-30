@@ -3,6 +3,7 @@
 
 struct PathListEntry;
 struct FolderPathListEntry;
+namespace ARCaveMan {
 
 struct SearchListEntry {
     HashToIndex path;
@@ -62,8 +63,12 @@ struct FolderPathListEntry {
         ext_.hash = 0x0;
         ext_.length = 0x0;
         ext_.index = 0x0;
-        return SearchListEntry{ file_path, parent_, ext_, file_name };
+        return SearchListEntry{ file_path, parent_, file_name, ext_ };
     }
+
+    //static SearchListEntry from_path(std::string _path, std::string _parent, std::string _file_name, std::string _ext) {
+    //    HashToIndex::from_hash40(Hash40::from_str(_path), 0xFFFFFF), HashToIndex::from_hash40(Hash40::from_str(_parent), 0x400000), HashToIndex::from_hash40(Hash40::from_str(_file_name), 0), HashToIndex::from_hash40(, 0),
+    //}
 };
 
 struct FileSystemSearchHeader {
@@ -72,3 +77,4 @@ struct FileSystemSearchHeader {
     uint32_t unk3;
     uint32_t unk4;
 };
+}

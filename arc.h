@@ -3,6 +3,7 @@
 #include <vector>
 #include "filesystem.h"
 #include "filesystem_search.h"
+#include "patch_section.h"
 #include <fstream>
 #include <zstd.h>
 #include <algorithm>
@@ -11,7 +12,7 @@
 
 // lazy macro lol
 
-#define VEC_SIZE(vec) vec.size()*sizeof(vec[0])
+#define VEC_SIZE(vec) vec.size()*sizeof(decltype(vec)::value_type)
 
 #define VEC_PTR(vec) (char*)&vec[0]
 
@@ -28,11 +29,13 @@
 
 #define MEMCPY_INTO_VEC(count, vec, t, buffer, pos) vec.resize(count); memcpy(VEC_PTR(vec), buffer+pos, VEC_SIZE(vec)); pos+=VEC_SIZE(vec);
 
-#define WRITE_FROM_VEC(stream, vec) stream.write(VEC_PTR(vec), VEC_SIZE(vec));
+#define WRITE_FROM_VEC(stream, vec) if (VEC_SIZE(vec) != 0) { stream.write(VEC_PTR(vec), VEC_SIZE(vec)); }
 
-#define MEMCPY_FROM_VEC(buffer, pos, vec) memcpy(buffer+pos, VEC_PTR(vec), VEC_SIZE(vec)); pos+=VEC_SIZE(vec);
+#define MEMCPY_FROM_VEC(buffer, pos, vec) if (VEC_SIZE(vec) != 0) { memcpy(buffer+pos, VEC_PTR(vec), VEC_SIZE(vec)); pos+=VEC_SIZE(vec); }
 
 //template<typename T> constexpr auto READ_INTO_VEC_CONSTEXPR(std::istream& stream, unsigned long long count, std::vector<T> vec) { return vec.resize(count); stream.read((char*)&vec[0], vec.size() * sizeof(T)); }
+
+namespace ARCaveMan {
 
 std::string replace_all(std::string data, const std::string& toSearch, const std::string& replaceStr)
 {
@@ -67,6 +70,11 @@ struct FileSystemCompressedTableHeader {
 };
 
 typedef FileSystemCompressedTableHeader FileSystemSearchCompressedTableHeader;
+typedef FileSystemCompressedTableHeader PatchSectionCompressedTableHeader;
+
+bool bucket_sorter(const HashToIndex& x, const HashToIndex& y) {
+	return x.as_hash40().as_u64() < y.as_hash40().as_u64();
+}
 
 class FileSystem {
 public:
@@ -195,7 +203,7 @@ public:
 
 		MEMCPY_INTO_VEC(FILEDATAS_ITER, file_datas, FileData, buf, pos);
 
-		std::cout << "[ARCaveMan::FileSystem] Reading into extra_data from pos=" << pos << " and its length is " << size - pos << std::endl;
+		std::cout << "[ARCaveMan::FileSystem] Reading into extra_data from pos=" << pos << " with len=" << size - pos << std::endl;
 
 		MEMCPY_INTO_VEC(size - pos, extra_data_end, uint8_t, buf, pos);
 
@@ -208,10 +216,49 @@ public:
 	
 	FileSystem() {}
 	
+	uint64_t get_table_size() {
+		uint64_t SIZE = sizeof(file_system_header) * 2 + 0x50 + sizeof(stream_header) + VEC_SIZE(quick_dirs) +
+			VEC_SIZE(stream_hash_to_entries) + VEC_SIZE(stream_entries) + VEC_SIZE(stream_file_indices) +
+			VEC_SIZE(stream_datas) + sizeof(hash_index_group_count) + sizeof(bucket_count) + VEC_SIZE(file_info_buckets) +
+			VEC_SIZE(file_hash_to_path_index) + VEC_SIZE(file_paths) + VEC_SIZE(file_info_indices) + VEC_SIZE(dir_hash_to_info_index) +
+			VEC_SIZE(dir_infos) + VEC_SIZE(folder_offsets) + VEC_SIZE(folder_child_hashes) + VEC_SIZE(file_infos) +
+			VEC_SIZE(file_info_to_datas) + VEC_SIZE(file_datas) + VEC_SIZE(extra_data_end);
+		return SIZE;
+	}
+
+	void REBUILD_FILEINFOBUCKETS() {
+		std::cout << "[ARCaveMan::FileSystem::FileInfoBuckets] Rebuilding FileInfoBuckets..." << std::endl;
+		std::vector<std::vector<HashToIndex>> buckets(bucket_count);
+
+		for (int x = 0; x < file_paths.size(); x++) {
+			const auto& file_path = file_paths[x];
+			Hash40 hash = file_path.path.as_hash40();
+			auto bucket_index = hash.as_u64() % bucket_count;
+
+			auto hashtoidx = HashToIndex::from_hash40(hash, x);
+			buckets[bucket_index].push_back(hashtoidx);
+		}
+
+		file_hash_to_path_index.clear();
+		file_info_buckets.clear();
+
+		uint32_t start = 0;
+
+		for (auto& bucket : buckets) {
+			std::sort(bucket.begin(), bucket.end(), &bucket_sorter);
+			std::copy(bucket.begin(), bucket.end(), std::back_inserter(file_hash_to_path_index));
+			file_info_buckets.push_back(FileInfoBucket{ start, (uint32_t)bucket.size() });
+			start += bucket.size();
+		}
+	}
+
 	void write(std::string path) {
 		auto start = std::chrono::high_resolution_clock::now();
 		std::cout << "[ARCaveMan::FileSystem::Write] Started export process..." << std::endl;
 		std::ofstream file(path, std::ios::out | std::ios::binary);
+
+		file_system_header.table_filesize = get_table_size();
+
 		file.write(FROM(file_system_header));
 		file.write(FROM(file_system_header));
 		file.write(extra_data, 0x50);
@@ -246,22 +293,11 @@ public:
 		std::cout << "[ARCaveMan::FileSystem::Write] Finished writing file system to " << path << " in " << duration.count() << "ms." << std::endl;
 	}
 	
-	// writes to buffer then compresses to zstd then writes to file. returns compressed size.
-	uint64_t write_compressed(std::string path) {
-		auto start = std::chrono::high_resolution_clock::now();
-		std::cout << "[ARCaveMan::FileSystem::Write] Started export process..." << std::endl;
-		uint64_t SIZE = sizeof(file_system_header) + 0xA8 + sizeof(stream_header) + VEC_SIZE(quick_dirs) + 
-			VEC_SIZE(stream_hash_to_entries) + VEC_SIZE(stream_entries) + VEC_SIZE(stream_file_indices) + 
-			VEC_SIZE(stream_datas) + sizeof(hash_index_group_count) + sizeof(bucket_count) + VEC_SIZE(file_info_buckets) + 
-			VEC_SIZE(file_hash_to_path_index) + VEC_SIZE(file_paths) + VEC_SIZE(file_info_indices) + VEC_SIZE(dir_hash_to_info_index) + 
-			VEC_SIZE(dir_infos) + VEC_SIZE(folder_offsets) + VEC_SIZE(folder_child_hashes) + VEC_SIZE(file_infos) + 
-			VEC_SIZE(file_info_to_datas) + VEC_SIZE(file_datas) + VEC_SIZE(extra_data_end);
-
-		char* buffer = new char[SIZE]; uint64_t pos = 0;
+	void write_uncompressed_to_buf(char* buffer, uint64_t max_size, uint64_t& pos) {
 
 		MEMCPY_FROM(buffer, file_system_header, pos);
 		MEMCPY_FROM(buffer, file_system_header, pos);
-		memcpy(buffer+pos, extra_data, 0x50); pos += 0x50;
+		memcpy(buffer + pos, extra_data, 0x50); pos += 0x50;
 		MEMCPY_FROM(buffer, stream_header, pos);
 
 		MEMCPY_FROM_VEC(buffer, pos, quick_dirs);
@@ -286,6 +322,25 @@ public:
 		MEMCPY_FROM_VEC(buffer, pos, file_datas);
 
 		MEMCPY_FROM_VEC(buffer, pos, extra_data_end);
+
+	}
+
+	// writes to buffer then compresses to zstd then writes to file. returns compressed size.
+	uint64_t write_compressed(std::string path) {
+		auto start = std::chrono::high_resolution_clock::now();
+		std::cout << "[ARCaveMan::FileSystem::Write] Started export process..." << std::endl;
+		uint64_t SIZE = get_table_size();
+
+		file_system_header.table_filesize = SIZE;
+
+		char* buffer = new char[SIZE]; uint64_t pos = 0;
+
+		write_uncompressed_to_buf(buffer, SIZE, pos);
+
+		std::ofstream file_dcmp("output_fs_edited.tbl", std::ios::out | std::ios::binary); // hardcoded because lazy moment
+		file_dcmp.write(buffer, SIZE);
+		file_dcmp.close();
+
 		char* buffer_out = new char[SIZE];
 		std::cout << "[ARCaveMan::FileSystem::Write] Compressing data.arc file system..." << std::endl;
 		uint64_t out_size = ZSTD_compress(buffer_out, SIZE, buffer, SIZE, ZSTD_maxCLevel());
@@ -304,50 +359,80 @@ public:
 	
 	// DO NOT USE!!!!!!!
 	uint64_t write_directly_to_arc(std::string path) {
-		write_compressed("WORKSPACE_.bin");
-		std::ifstream fsdata("WORKSPACE_.bin");
+		
+		std::cout << "[ARCaveMan::FileSystem::WriteDirectlyToARC] Writing directly to ARC at " << path << "..." << std::endl;
 
-		fsdata.seekg(0, std::ios_base::end);
-		uint64_t SIZE = fsdata.tellg();
-		fsdata.seekg(0);
+		uint64_t SIZE = write_compressed("output_fs_compressed.tbl");
+		std::ifstream fsdata("output_fs_compressed.tbl", std::ios::in | std::ios::out | std::ios::binary);
 
 		char* buffer = new char[SIZE];
 		fsdata.read(buffer, SIZE);
 		fsdata.close();
 
 		std::ifstream arc_input(path, std::ios::in | std::ios::binary);
-		std::ofstream arc_output(path, std::ios::out | std::ios::binary);
+		if (!arc_input) {
+			std::cout << "[ARCaveMan::FileSystem::WriteDirectlyToARC] Failed to open ARC. Aborting..." << std::endl;
+			return 1;
+		}
+		std::ofstream arc_output;
 
 		ArcHeader local_arc_header{};
 
 		arc_input.read(INTO(local_arc_header));
 
 		arc_input.seekg(local_arc_header.file_system_offset);
-		// arc_output.seekp(local_arc_header.file_system_offset);//+sizeof(FileSystemCompressedTableHeader));
 
 		FileSystemCompressedTableHeader local_fs_ctable_header{};
 
 		arc_input.read(INTO(local_fs_ctable_header));
+
 		if (local_fs_ctable_header.section_size < SIZE) {
 
 			arc_input.seekg(0, std::ios_base::end);
-			uint64_t fs_search_size = (uint64_t)arc_input.tellg() - local_arc_header.file_system_search_offset;
+			uint64_t size_tmp = arc_input.tellg();
+			uint64_t fs_search_size = size_tmp - local_arc_header.file_system_search_offset;
 			arc_input.seekg(local_arc_header.file_system_search_offset);
 
 			char* fs_search_data = new char[fs_search_size];
 			arc_input.read(fs_search_data, fs_search_size);
 
+			arc_input.close();
+
 			uint64_t header_shift = local_fs_ctable_header.section_size - SIZE;
 			local_arc_header.file_system_search_offset += header_shift;
 
 			local_fs_ctable_header.comp_size = SIZE;
+			local_fs_ctable_header.decomp_size = get_table_size();
+			local_fs_ctable_header.section_size += header_shift;
+
+			arc_output.open(path, std::ios::in | std::ios::out | std::ios::binary);
 
 			arc_output.write(FROM(local_arc_header));
 			arc_output.seekp(local_arc_header.file_system_offset);
+			arc_output.write(FROM(local_fs_ctable_header));
+			arc_output.write(buffer, SIZE);
+			arc_output.write(fs_search_data, fs_search_size);
+			delete[] fs_search_data;
+		}
+		else {
+			arc_input.close();
 
-			//arc_output.write();
+			arc_output.open(path, std::ios::in | std::ios::out | std::ios::binary);
+
+			arc_output.seekp(local_arc_header.file_system_offset);
+			local_fs_ctable_header.comp_size = SIZE;
+			local_fs_ctable_header.decomp_size = get_table_size();
+			arc_output.write(FROM(local_fs_ctable_header));
+			arc_output.write(buffer, SIZE);
 
 		}
+		delete[] buffer;
+		
+		arc_output.close();
+
+		std::cout << "[ARCaveMan::FileSystem::WriteDirectlyToARC] Wrote filesystem data directly to " << path << "." << std::endl;
+
+		return 0;
 
 	}
 	
@@ -427,11 +512,14 @@ public:
 		delete[] buffer_out;
 		return out_size;
 	}
-};
+	void add_folder_recursive(std::string path) {
+		std::string parent_str = path.substr(0, path.find_last_of("/") - 1);
+		if (path == parent_str + "/") {
+			FolderPathListEntry{ HashToIndex::from_hash40(Hash40::from_str(path), 0xFFFFFF), HashToIndex::from_hash40(Hash40::from_str(""), 0x400000), };
+		}
 
-bool bucket_sorter(const HashToIndex& x, const HashToIndex& y) {
-	return x.as_hash40().as_u64() < y.as_hash40().as_u64();
-}
+	}
+};
 
 class Arc {
 public:
@@ -440,6 +528,8 @@ public:
 	FileSystem file_system;
 	FileSystemSearchCompressedTableHeader file_system_search_comp_table_header;
 	FileSystemSearch file_system_search;
+	PatchSectionCompressedTableHeader patch_section_comp_table_header;
+	PatchSection patch_section;
 	
 	Arc(std::string path) {
 		std::cout << "[ARCaveMan::ARC] Opening data.arc..." << std::endl;
@@ -473,38 +563,28 @@ public:
 		std::cout << "[ARCaveMan::ARC] Initializing file system search..." << std::endl;
 		file_system_search = { decomp_data, file_system_search_comp_table_header.decomp_size };
 		delete[] decomp_data;
-
-		file_system_search.write("dump_fs_search.tbl");
+		
+		// patchsection
+		if (arc_header.patch_section_offset != 0) {
+			file.seekg(arc_header.patch_section_offset);
+			file.read(INTO(patch_section_comp_table_header));
+			comp_data = new char[patch_section_comp_table_header.comp_size];
+			decomp_data = new char[patch_section_comp_table_header.decomp_size];
+			file.read(comp_data, patch_section_comp_table_header.comp_size);
+			std::cout << "[ARCaveMan::ARC] Decompressing file system search data..." << std::endl;
+			if (ZSTD_isError(ZSTD_decompress(decomp_data, patch_section_comp_table_header.decomp_size, comp_data, file_system_search_comp_table_header.comp_size)))
+				std::cout << "[ARCaveMan::ARC] Failed to decompress file system search data." << std::endl;
+			delete[] comp_data;
+			std::cout << "[ARCaveMan::ARC] Initializing file system search..." << std::endl;
+			patch_section = { decomp_data, patch_section_comp_table_header.decomp_size };
+			delete[] decomp_data;
+		}
+		
+		//file_system_search.write("dump_fs_search.tbl");
 
 		file.close();
 		std::cout << "[ARCaveMan::ARC] Completed ARC Initialization." << std::endl;
 
-	}
-	
-	void REBUILD_FILEINFOBUCKETS() {
-		std::cout << "[ARCaveMan::FileInfoBuckets] Rebuilding FileInfoBuckets..." << std::endl;
-		std::vector<std::vector<HashToIndex>> buckets(file_system.bucket_count);
-
-		for (int x = 0; x < file_system.file_paths.size(); x++) {
-			const auto& file_path = file_system.file_paths[x];
-			Hash40 hash = file_path.path.as_hash40();
-			auto bucket_index = hash.as_u64() % file_system.bucket_count;
-
-			auto hashtoidx = HashToIndex::from_hash40(hash, x);
-			buckets[bucket_index].push_back(hashtoidx);
-		}
-
-		file_system.file_hash_to_path_index.clear();
-		file_system.file_info_buckets.clear();
-
-		uint32_t start = 0;
-
-		for (auto& bucket : buckets) {
-			std::sort(bucket.begin(), bucket.end(), &bucket_sorter);
-			std::copy(bucket.begin(), bucket.end(), std::back_inserter(file_system.file_hash_to_path_index));
-			file_system.file_info_buckets.push_back(FileInfoBucket{ start, (uint32_t)bucket.size() });
-			start += bucket.size();
-		}
 	}
 	
 	void REBUILD_DIR_HASH_TO_INFO_INDEX() {
@@ -564,6 +644,33 @@ public:
 			return nullptr;
 		}
 	}
+
+	void resolve_dirinfo_and_diroffset(DirInfo& in_dir_info, DirInfo* out_dir_info, DirectoryOffset* out_dir_offset) {
+		if (in_dir_info.flags.redirected) {
+			auto directory_index = file_system.folder_offsets[in_dir_info.path.index].directory_index;
+			if (directory_index != 0xFFFFFF) {
+				if (in_dir_info.flags.is_symlink) {
+					*out_dir_info = file_system.dir_infos[directory_index]; //Intermediate DirInfo ?
+					*out_dir_offset = file_system.folder_offsets[file_system.dir_infos[directory_index].path.index];
+				}
+				else {
+					for (const auto& elem : file_system.dir_infos) {
+						if (elem.path.index == directory_index) {
+							*out_dir_info = elem;
+						}
+					}
+					*out_dir_offset = file_system.folder_offsets[directory_index];
+				}
+			}
+			else {
+				//return nullptr;
+			}
+		}
+		else {
+			*out_dir_info = in_dir_info;
+			*out_dir_offset = file_system.folder_offsets[in_dir_info.path.index];
+		}
+	}
 	
 	DirInfo& get_dir_info_from_path_hash(Hash40 hash) {
 		for (const auto& dir_info_idx : file_system.dir_hash_to_info_index) {
@@ -600,10 +707,65 @@ public:
 		return file_system.folder_offsets[dir_info.path.index];
 	}
 	
+	DirInfo& get_dir_info_from_fileinfo(FileInfo& fileinfo) {
+		for (auto& elem : file_system.dir_infos) {
+			if (elem.path.index == get_fileinfotodata(fileinfo).folder_offset_index) {
+				return elem;
+			}
+		}
+	}
+
+	// NOT TESTED
+	DirInfo& get_dir_info_from_dir_offset(DirectoryOffset& diroffset) {
+		
+		auto index = (&diroffset - &file_system.folder_offsets[0]);
+		
+		for (auto& elem : file_system.dir_infos) {
+			if (elem.path.index == index) {
+				return elem;
+			}
+		}
+	}
+
 	std::string get_string_from_fileinfo(FileInfo& fileinfo) {
 		return Hashes::unhash_from_labels(file_system.file_paths[fileinfo.file_path_index].path.as_hash40());
 	}
+	/*
+	void append_stream(Hash40 hash, uint64_t size) {// Only works for music in stream:/sound/bgm/. Sorry m8.
+		auto TARGET_START_IDX = file_system.quick_dirs[0].index; // Hard code
+		auto INSERT_AT = 0;
+		for (int x = 0; x < file_system.quick_dirs.size(); x++) {
+			if (file_system.quick_dirs[x].index == TARGET_START_IDX) {
+				INSERT_AT = file_system.quick_dirs[x].index + file_system.quick_dirs[x].count;
+				file_system.quick_dirs[x].count++;
+			}
+			else if (file_system.quick_dirs[x].index > TARGET_START_IDX)
+				file_system.quick_dirs[x].index++;
+		}
 
+		auto hashtoindex = HashToIndex::from_hash40(hash, file_system.stream_entries.size());
+		file_system.stream_hash_to_entries.insert(file_system.stream_hash_to_entries.begin() + INSERT_AT, hashtoindex);
+		// sorting meme
+		std::sort(file_system.stream_hash_to_entries.begin() + TARGET_START_IDX, file_system.stream_hash_to_entries.begin() + INSERT_AT);
+
+		auto streamentry = StreamEntry{ hash.crc, hash.len, (uint32_t)file_system.stream_file_indices.size(), 0 };
+		file_system.stream_entries.push_back(streamentry);
+
+		file_system.stream_file_indices.push_back(file_system.stream_datas.size());
+
+		uint64_t NEW_OFFSET = file_system.stream_datas[-1].offset + file_system.stream_datas[-1].size;
+
+		if (NEW_OFFSET % 8 != 0)
+			NEW_OFFSET = ((NEW_OFFSET / 8) + 1)*8;
+
+		auto streamdata = StreamData{ size, NEW_OFFSET };
+		file_system.stream_datas.push_back(streamdata);
+		file_system.stream_header.stream_hash_count++;
+		file_system.stream_header.stream_file_index_count++;
+		file_system.stream_header.stream_offset_entry_count++;
+		// file_system.quick_dirs[0] is stream:/sound/bgm/
+	}
+	*/
 	//  Works for files directly referenced, but not ones used as part of a directory where all of the files are grabbed at once.
 	void addition(FileInfo& base_fileinfo, std::string full_path, std::string extension, std::string directory_path, std::string file_name) {
 		auto base_file_info_flags = base_fileinfo.flags;
@@ -734,7 +896,7 @@ public:
 		file_system.file_paths.push_back(file_path);
 
 		// if it looks confusing why we subtract one its for a reason
-		// subtract one from an array length bc we already push_backed, and thats the idx that will be referenced
+		// subtract one from an array length bc we already pushed to the back, and thats the idx that will be referenced
 		FileInfoIndex file_info_index = { base_dir_offset_index, fileinfo_insert_index };
 
 		file_system.file_info_indices.push_back(file_info_index);
@@ -801,16 +963,16 @@ public:
 		//std::cout << Hashes::unhash_from_labels(dirinfo.path.as_hash40()) << std::endl;
 	}
 
-	void directory_addition(std::string base_dir_path, std::string base_dir_name, std::string new_dir_path, std::string new_dir_name, std::string base_dir_to_replace, std::string new_dir_replace_with) {
+	void directory_addition_recursive(std::string base_dir_path, std::string base_dir_name, std::string new_dir_path, std::string new_dir_name, std::string base_dir_to_replace, std::string new_dir_replace_with) {
 	    // hype
 	    // this DOES NOT WORK as it does not account for redirection which is like super important
 	    // also it does not edit the parent hashes, which is also super important
 
-	    auto& old_dirinfo = get_dir_info_from_path_hash(Hash40::from_str(base_dir_path)); // "fighter/pickel/c00"
-	    auto& old_diroffset = get_dir_offset_from_dir_info(old_dirinfo.path.index);
+		auto old_dirinfo = get_dir_info_from_path_hash(Hash40::from_str(base_dir_path));
+		auto old_diroffset = get_dir_offset_from_dir_info(old_dirinfo);
 
-	    DirInfo new_dirinfo = old_dirinfo; 
-	    DirectoryOffset new_diroffset = get_dir_offset_from_dir_info(old_dirinfo.path.index);
+		DirInfo new_dirinfo = old_dirinfo;
+		DirectoryOffset new_diroffset = get_dir_offset_from_dir_info(old_dirinfo);
 
 	    new_diroffset.file_start_index = file_system.file_datas.size(); // set start indices to end of fileinfo and filedata arrays
 	    new_dirinfo.file_info_start_index = file_system.file_infos.size();
@@ -821,9 +983,10 @@ public:
 
 	    new_dirinfo.name = Hash40::from_str(new_dir_name);// "c08"
 	    new_dirinfo.path = HashToIndex::from_hash40(Hash40::from_str(new_dir_path), (uint32_t)file_system.folder_offsets.size());
-		new_dirinfo.parent = Hash40::from_str(new_dir_path.substr(0,new_dir_path.find_last_of(new_dir_name) + 1)));
+		new_dirinfo.parent = Hash40::from_str(new_dir_path.substr(0, new_dir_path.find_last_of(new_dir_name) + 1));
 
-	    new_dirinfo.child_dir_start_index = file_system.dir_infos.size() + 1; // set start index to end of dirinfo array
+		if (old_dirinfo.child_dir_start_index > 0)
+			new_dirinfo.child_dir_start_index = file_system.dir_infos.size() + 1; // set start index to end of dirinfo array
 
 	    file_system.dir_infos.push_back(new_dirinfo);
 	    file_system.folder_offsets.push_back(new_diroffset);
@@ -831,23 +994,94 @@ public:
 	    file_system.folder_child_hashes.push_back(HashToIndex::from_hash40(Hash40::from_str(new_dir_path), (uint32_t)file_system.dir_infos.size() - 1)); // potentially not needed? maybe
 
 	    for (int iter = 0; iter < old_dirinfo.file_count; iter++) { // add all files in the original directory to the new directory.
-			auto fileinfo = file_system.file_infos[(uint64_t)new_dirinfo.file_info_start_index + iter];
-			auto& FP = file_system.file_paths[base_fileinfo.file_path_index];
+			auto fileinfo = file_system.file_infos[(uint64_t)old_dirinfo.file_info_start_index + iter];
+			auto& FP = file_system.file_paths[fileinfo.file_path_index];
 			auto new_path = replace_all(Hashes::unhash_from_labels(FP.path.as_hash40()), base_dir_to_replace, new_dir_replace_with);
-			auto new_parent = replace_all(Hashes::unhash_from_labels(FP.parent.as_hash40()  ), base_dir_to_replace, new_dir_replace_with);
-			file_in_dir_addition(file_system.dir_infos[-1], fileinfo, new_path, Hashes::unhash_from_labels(FP.ext.as_hash40()), new_parent, Hashes::unhash_from_labels(FP.file_name.as_hash40()));
+			auto new_parent = replace_all(Hashes::unhash_from_labels(FP.parent.as_hash40()), base_dir_to_replace, new_dir_replace_with);
+			file_in_dir_addition(file_system.dir_infos[file_system.dir_infos.size()-1], fileinfo, new_path, Hashes::unhash_from_labels(FP.ext.as_hash40()), new_parent, Hashes::unhash_from_labels(FP.file_name.as_hash40()));
 	    }
 
-	    for (int iter = 0; iter < old_dirinfo.child_dir_count; iter++) {
+		for (int iter = 0; iter < old_dirinfo.child_dir_count; iter++) {
 			auto child_dir_base_path = Hashes::unhash_from_labels(file_system.dir_infos[old_dirinfo.child_dir_start_index + iter].path.as_hash40());
-			auto child_dir_base_name = Hashes::unhash_from_labels(file_system.dir_infos[old_dirinfo.child_dir_start_index + iter].name.as_hash40());
-			directory_addition(child_dir_base_path, child_dir_base_name, replace_all(child_dir_base_path, base_dir_to_replace, new_dir_replace_with), replace_all(child_dir_base_name, base_dir_to_replace, new_dir_replace_with), base_dir_to_replace, new_dir_replace_with);
-	    }
+			auto child_dir_base_name = Hashes::unhash_from_labels(file_system.dir_infos[old_dirinfo.child_dir_start_index + iter].name);
+			directory_addition_recursive(child_dir_base_path, child_dir_base_name, replace_all(child_dir_base_path, base_dir_to_replace, new_dir_replace_with), replace_all(child_dir_base_name, base_dir_to_replace, new_dir_replace_with), base_dir_to_replace, new_dir_replace_with);
+		}
+
+		file_system.file_system_header.folder_offset_count_1++;
+		file_system.file_system_header.folder_count++;
+		file_system.file_system_header.hash_folder_count++;
+
+	}
+
+	void directory_addition(std::string base_dir_path, std::string base_dir_name, std::string new_dir_path, std::string new_dir_name, std::string base_dir_to_replace, std::string new_dir_replace_with) {
+		// hype
+		// this DOES NOT WORK as it does not account for redirection which is like super important
+		// also it does not edit the parent hashes, which is also super important
+
+		auto old_dirinfo = get_dir_info_from_path_hash(Hash40::from_str(base_dir_path));
+		auto old_diroffset = get_dir_offset_from_dir_info(old_dirinfo);
+
+		DirInfo new_dirinfo = old_dirinfo;
+		DirectoryOffset new_diroffset = get_dir_offset_from_dir_info(old_dirinfo);
+
+		new_diroffset.file_start_index = file_system.file_datas.size(); // set start indices to end of fileinfo and filedata arrays
+		new_dirinfo.file_info_start_index = file_system.file_infos.size();
+
+		new_dirinfo.file_count = 0; // this is modified by file_in_dir_addition so we gucci
+
+		new_dirinfo.name = Hash40::from_str(new_dir_name);// "c08"
+		new_dirinfo.path = HashToIndex::from_hash40(Hash40::from_str(new_dir_path), (uint32_t)file_system.folder_offsets.size());
+		new_dirinfo.parent = Hash40::from_str(new_dir_path.substr(0, new_dir_path.find_last_of(new_dir_name) + 1));
+
+		if (old_dirinfo.child_dir_start_index > 0)
+			new_dirinfo.child_dir_start_index = file_system.dir_infos.size() + 1; // set start index to end of dirinfo array
+
+		file_system.dir_infos.push_back(new_dirinfo);
+		file_system.folder_offsets.push_back(new_diroffset);
+
+		file_system.folder_child_hashes.push_back(HashToIndex::from_hash40(Hash40::from_str(new_dir_path), (uint32_t)file_system.dir_infos.size() - 1)); // potentially not needed? maybe
+
+		for (int iter = 0; iter < old_dirinfo.file_count; iter++) { // add all files in the original directory to the new directory.
+			auto fileinfo = file_system.file_infos[(uint64_t)old_dirinfo.file_info_start_index + iter];
+			auto& FP = file_system.file_paths[fileinfo.file_path_index];
+			auto new_path = replace_all(Hashes::unhash_from_labels(FP.path.as_hash40()), base_dir_to_replace, new_dir_replace_with);
+			auto new_parent = replace_all(Hashes::unhash_from_labels(FP.parent.as_hash40()), base_dir_to_replace, new_dir_replace_with);
+			//file_in_dir_addition(file_system.dir_infos[file_system.dir_infos.size() - 1], fileinfo, new_path, Hashes::unhash_from_labels(FP.ext.as_hash40()), new_parent, Hashes::unhash_from_labels(FP.file_name.as_hash40()));
+			addition(fileinfo, new_path, Hashes::unhash_from_labels(FP.ext.as_hash40()), new_parent, Hashes::unhash_from_labels(FP.file_name.as_hash40()));
+		}
+
+		file_system.file_system_header.folder_offset_count_1++;
+		file_system.file_system_header.folder_count++;
+		file_system.file_system_header.hash_folder_count++;
 
 	}
 
 	void expand_compressed_size() {
 		// fard
+	}
+
+	void add_c08_shared() {
+		const auto old_dirinfo = get_dir_info_from_path_hash(Hash40::from_str("fighter/pickel/c00"));
+		auto new_dirinfo = DirInfo{ HashToIndex::from_hash40(Hash40::from_str("fighter/pickel/c08"), old_dirinfo.path.index), Hash40::from_str("c08"), old_dirinfo.parent, 0, 0, 0, 0, 0, 0, DirInfoFlags{false, true, false, true, false} };
+		file_system.dir_infos.push_back(new_dirinfo);
+
+		for (int iter = 0; iter < old_dirinfo.file_count; iter++) { // copy all the old files' filepaths and just edit the hashes. the fileinfoindexindex will still point to the right file.
+			const auto& fileinfo = file_system.file_infos[(uint64_t)old_dirinfo.file_info_start_index + iter];
+			FilePath FP = file_system.file_paths[fileinfo.file_path_index];
+			
+			//auto& filepath = file_system.file_paths[get_shared_file(fileinfo)];
+
+			auto new_path_hash = Hash40::from_str(replace_all(Hashes::unhash_from_labels(FP.path.as_hash40()), "c00", "c08"));
+			auto new_parent_hash = Hash40::from_str(replace_all(Hashes::unhash_from_labels(FP.parent.as_hash40()), "c00", "c08"));
+
+			FP.path.set_hash40(new_path_hash);
+			FP.parent.set_hash40(new_parent_hash);
+
+			file_system.file_paths.push_back(FP);
+			file_system.file_system_header.file_info_path_count++;
+		}
+		file_system.file_system_header.folder_count++;
+		
 	}
 
 	void print_all_symlinked_dirs() {
@@ -860,4 +1094,5 @@ public:
 
 		}
 	}
+};
 };
