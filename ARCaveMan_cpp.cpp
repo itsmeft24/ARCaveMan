@@ -68,6 +68,22 @@ void file_in_dir_addition_test(Arc& arc) {
     arc.file_system.write_compressed("output_fs_compressed.tbl");
 }
 
+void add_c08_steve(Arc& arc){
+    arc.directory_addition(
+        "fighter/pickel/c00",
+        "fighter/pickel/c08",
+        "c00",
+        "c08",
+        "c00",
+        "c08"
+    );
+    arc.REBUILD_DIR_HASH_TO_INFO_INDEX();
+    arc.REBUILD_FILEINFOBUCKETS();
+    arc.file_system.write("output_fs_edited.tbl");
+
+    arc.file_system.write_compressed("output_fs_compressed.tbl");    
+}
+
 int file_addition_script(int argc, char* argv[])
 {
     if (argc < 5) {

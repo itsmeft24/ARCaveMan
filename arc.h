@@ -801,19 +801,16 @@ public:
 		//std::cout << Hashes::unhash_from_labels(dirinfo.path.as_hash40()) << std::endl;
 	}
 
-	void directory_addition(std::string base_dir_path, std::string base_dir_name, std::string new_dir_path, std::string new_dir_name) {
+	void directory_addition(std::string base_dir_path, std::string base_dir_name, std::string new_dir_path, std::string new_dir_name, std::string base_dir_to_replace, std::string new_dir_replace_with) {
 	    // hype
 	    // this DOES NOT WORK as it does not account for redirection which is like super important
 	    // also it does not edit the parent hashes, which is also super important
 
-	    auto dir_hash = Hash40::from_str(base_dir_path); //"fighter/pickel/c00"
-	    auto dirinfo_index = get_dir_info_index_from_path_hash(dir_hash);
+	    auto& old_dirinfo = get_dir_info_from_path_hash(Hash40::from_str(base_dir_path)); // "fighter/pickel/c00"
+	    auto& old_diroffset = get_dir_offset_from_dir_info(old_dirinfo.path.index);
 
-	    auto& old_dirinfo = file_system.dir_infos[dirinfo_index];
-	    auto& old_diroffset = file_system.folder_offsets[old_dirinfo.path.index];
-
-	    auto new_dirinfo = file_system.dir_infos[dirinfo_index];
-	    auto new_diroffset = file_system.folder_offsets[new_dirinfo.path.index];
+	    DirInfo new_dirinfo = old_dirinfo; 
+	    DirectoryOffset new_diroffset = get_dir_offset_from_dir_info(old_dirinfo.path.index);
 
 	    new_diroffset.file_start_index = file_system.file_datas.size(); // set start indices to end of fileinfo and filedata arrays
 	    new_dirinfo.file_info_start_index = file_system.file_infos.size();
@@ -824,6 +821,7 @@ public:
 
 	    new_dirinfo.name = Hash40::from_str(new_dir_name);// "c08"
 	    new_dirinfo.path = HashToIndex::from_hash40(Hash40::from_str(new_dir_path), (uint32_t)file_system.folder_offsets.size());
+		new_dirinfo.parent = Hash40::from_str(new_dir_path.substr(0,new_dir_path.find_last_of(new_dir_name) + 1)));
 
 	    new_dirinfo.child_dir_start_index = file_system.dir_infos.size() + 1; // set start index to end of dirinfo array
 
@@ -834,16 +832,16 @@ public:
 
 	    for (int iter = 0; iter < old_dirinfo.file_count; iter++) { // add all files in the original directory to the new directory.
 			auto fileinfo = file_system.file_infos[(uint64_t)new_dirinfo.file_info_start_index + iter];
-			auto& FP = file_system.file_paths[fileinfo.file_path_index];
-			auto new_path = replace_all(Hashes::unhash_from_labels(FP.path.as_hash40()), base_dir_name, new_dir_name);
-			auto new_parent = replace_all(Hashes::unhash_from_labels(FP.parent.as_hash40()  ), base_dir_name, new_dir_name);
+			auto& FP = file_system.file_paths[base_fileinfo.file_path_index];
+			auto new_path = replace_all(Hashes::unhash_from_labels(FP.path.as_hash40()), base_dir_to_replace, new_dir_replace_with);
+			auto new_parent = replace_all(Hashes::unhash_from_labels(FP.parent.as_hash40()  ), base_dir_to_replace, new_dir_replace_with);
 			file_in_dir_addition(file_system.dir_infos[-1], fileinfo, new_path, Hashes::unhash_from_labels(FP.ext.as_hash40()), new_parent, Hashes::unhash_from_labels(FP.file_name.as_hash40()));
 	    }
 
-		for (int iter = 0; iter < old_dirinfo.child_dir_count; iter++) {
+	    for (int iter = 0; iter < old_dirinfo.child_dir_count; iter++) {
 			auto child_dir_base_path = Hashes::unhash_from_labels(file_system.dir_infos[old_dirinfo.child_dir_start_index + iter].path.as_hash40());
-			auto child_dir_base_name = Hashes::unhash_from_labels(file_system.dir_infos[old_dirinfo.child_dir_start_index + iter].name);
-			directory_addition(child_dir_base_path, child_dir_base_name, replace_all(child_dir_base_path, base_dir_name, new_dir_name), replace_all(child_dir_base_name, base_dir_name, new_dir_name));
+			auto child_dir_base_name = Hashes::unhash_from_labels(file_system.dir_infos[old_dirinfo.child_dir_start_index + iter].name.as_hash40());
+			directory_addition(child_dir_base_path, child_dir_base_name, replace_all(child_dir_base_path, base_dir_to_replace, new_dir_replace_with), replace_all(child_dir_base_name, base_dir_to_replace, new_dir_replace_with), base_dir_to_replace, new_dir_replace_with);
 	    }
 
 	}
