@@ -3,7 +3,7 @@
 #include <filesystem>
 #include "arc.h"
 namespace ARCaveMan {
-	namespace FrontEnd {
+	namespace FrontEnd { // unfinished, will most likely rewrite everything
 	    
 
         enum class Operation : uint8_t

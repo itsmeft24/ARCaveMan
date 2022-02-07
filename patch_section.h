@@ -9,7 +9,7 @@ namespace ARCaveMan {
 		uint64_t file_info_index_count;
 	};
 
-	class PatchSection {
+	class PatchSection { // not fully reverse-engineered yet
 	public:
 		PatchSectionHeader patch_section_header;
 		//...
@@ -17,11 +17,11 @@ namespace ARCaveMan {
 		std::vector<DirectoryOffset> folder_offsets;
 
 		PatchSection(std::istream& stream) {
-			std::cout << "[ARCaveMan::PatchSection] Parsing data from std::istream buffer..." << std::endl;
+			std::cout << "[ARCaveMan::PatchSection] Parsing data from std::istream buffer... DUMMY" << std::endl;
 		}
 
 		PatchSection(char* buf, uint64_t size) {
-			std::cout << "[ARCaveMan::PatchSection] Parsing data from char array (buffer)..." << std::endl;
+			std::cout << "[ARCaveMan::PatchSection] Parsing data from char array (buffer)... DUMMY" << std::endl;
 		}
 
 		PatchSection() {}

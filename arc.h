@@ -10,7 +10,8 @@
 #include <chrono>
 #include <assert.h>
 
-// lazy macro lol
+// lazy macros lol
+// yeah, yeah, this is WILDLY unsafe. i know.
 
 #define VEC_SIZE(vec) vec.size()*sizeof(decltype(vec)::value_type)
 
@@ -24,7 +25,6 @@
 
 #define MEMCPY_FROM(BUF, VAR, POS) memcpy(BUF+POS, &VAR, sizeof(VAR)); POS+=sizeof(VAR);
 
-// WILDLY unsafe. i know.
 #define READ_INTO_VEC(stream, count, vec, t) vec.resize(count); stream.read(VEC_PTR(vec), VEC_SIZE(vec));
 
 #define MEMCPY_INTO_VEC(count, vec, t, buffer, pos) vec.resize(count); memcpy(VEC_PTR(vec), buffer+pos, VEC_SIZE(vec)); pos+=VEC_SIZE(vec);
@@ -32,8 +32,6 @@
 #define WRITE_FROM_VEC(stream, vec) if (VEC_SIZE(vec) != 0) { stream.write(VEC_PTR(vec), VEC_SIZE(vec)); }
 
 #define MEMCPY_FROM_VEC(buffer, pos, vec) if (VEC_SIZE(vec) != 0) { memcpy(buffer+pos, VEC_PTR(vec), VEC_SIZE(vec)); pos+=VEC_SIZE(vec); }
-
-//template<typename T> constexpr auto READ_INTO_VEC_CONSTEXPR(std::istream& stream, unsigned long long count, std::vector<T> vec) { return vec.resize(count); stream.read((char*)&vec[0], vec.size() * sizeof(T)); }
 
 namespace ARCaveMan {
 
@@ -99,18 +97,15 @@ public:
 	std::vector<FileInfo> file_infos;
 	std::vector<FileInfoToFileData> file_info_to_datas;
 	std::vector<FileData> file_datas;
-	// char* extra_data_end;
 	std::vector<uint8_t> extra_data_end;
 	
 	FileSystem(std::istream& stream) {
 		std::cout << "[ARCaveMan::FileSystem] Parsing data from std::istream buffer..." << std::endl;
-		//stream.read((char*)&FileSystemHeader, sizeof(FileSystemHeader));
+
 		stream.read(INTO(file_system_header));
 		stream.seekg(0x58, std::ios_base::cur);
 		stream.read(extra_data, 0x50);
 		stream.read(INTO(stream_header));
-
-		// READ_INTO_VEC_CONSTEXPR<QuickDir>(stream, StreamHeader.quick_dir_count, quick_dirs);
 
 		READ_INTO_VEC(stream, stream_header.quick_dir_count, quick_dirs, QuickDir);
 		READ_INTO_VEC(stream, stream_header.stream_hash_count, stream_hash_to_entries, HashToIndex);
@@ -154,10 +149,6 @@ public:
 		stream.seekg(curr_pos, std::ios_base::beg);
 
 		READ_INTO_VEC(stream, size - curr_pos, extra_data_end, uint8_t);
-
-		//extra_data_end = new char[size - curr_pos];
-
-		//stream.read(extra_data_end, size - curr_pos);
 	}
 	
 	FileSystem(char* buf, uint64_t size) {
@@ -206,12 +197,6 @@ public:
 		std::cout << "[ARCaveMan::FileSystem] Reading into extra_data from pos=" << pos << " with len=" << size - pos << std::endl;
 
 		MEMCPY_INTO_VEC(size - pos, extra_data_end, uint8_t, buf, pos);
-
-		
-
-		//extra_data_end = new char[size - pos];
-
-		//memcpy(extra_data_end, buf+pos, size - pos); pos = size;
 	}
 	
 	FileSystem() {}
@@ -249,6 +234,16 @@ public:
 			std::copy(bucket.begin(), bucket.end(), std::back_inserter(file_hash_to_path_index));
 			file_info_buckets.push_back(FileInfoBucket{ start, (uint32_t)bucket.size() });
 			start += bucket.size();
+		}
+	}
+
+	void REBUILD_DIR_HASH_TO_INFO_INDEX() {
+		std::cout << "[ARCaveMan::FileSystem::DirHashToInfoIndex] Rebuilding DirHashToInfoIndices..." << std::endl;
+		dir_hash_to_info_index.clear();
+		for (int x = 0; x < dir_infos.size(); x++) {
+			const auto& dir_info = dir_infos[x];
+			auto hashtoidx = HashToIndex::from_hash40(dir_info.path.as_hash40(), x);
+			dir_hash_to_info_index.push_back(hashtoidx);
 		}
 	}
 
@@ -435,10 +430,6 @@ public:
 		return 0;
 
 	}
-	
-	/*~FileSystem() {
-		delete[] extra_data_end;
-	}*/
 };
 
 class FileSystemSearch {
@@ -571,30 +562,17 @@ public:
 			comp_data = new char[patch_section_comp_table_header.comp_size];
 			decomp_data = new char[patch_section_comp_table_header.decomp_size];
 			file.read(comp_data, patch_section_comp_table_header.comp_size);
-			std::cout << "[ARCaveMan::ARC] Decompressing file system search data..." << std::endl;
+			std::cout << "[ARCaveMan::ARC] Decompressing patch section data..." << std::endl;
 			if (ZSTD_isError(ZSTD_decompress(decomp_data, patch_section_comp_table_header.decomp_size, comp_data, file_system_search_comp_table_header.comp_size)))
 				std::cout << "[ARCaveMan::ARC] Failed to decompress file system search data." << std::endl;
 			delete[] comp_data;
-			std::cout << "[ARCaveMan::ARC] Initializing file system search..." << std::endl;
+			std::cout << "[ARCaveMan::ARC] Initializing patch section..." << std::endl;
 			patch_section = { decomp_data, patch_section_comp_table_header.decomp_size };
 			delete[] decomp_data;
 		}
-		
-		//file_system_search.write("dump_fs_search.tbl");
-
 		file.close();
 		std::cout << "[ARCaveMan::ARC] Completed ARC Initialization." << std::endl;
 
-	}
-	
-	void REBUILD_DIR_HASH_TO_INFO_INDEX() {
-		std::cout << "[ARCaveMan::DirHashToInfoIndex] Rebuilding DirHashToInfoIndices..." << std::endl;
-		file_system.dir_hash_to_info_index.clear();
-		for (int x = 0; x < file_system.dir_infos.size(); x++) {
-			const auto& dir_info = file_system.dir_infos[x];
-			auto hashtoidx = HashToIndex::from_hash40(dir_info.path.as_hash40(), x);
-			file_system.dir_hash_to_info_index.push_back(hashtoidx);
-		}
 	}
 
 	FileInfoToFileData& get_fileinfotodata(FileInfo& fileinfo) {
@@ -622,26 +600,6 @@ public:
 				auto index = file_system.file_info_indices[file_info_index_index].file_info_index; //Yeah that totally makes sense - _ - Man the arc sucks.;
 				return file_system.file_infos[index];
 			}
-		}
-	}
-	
-	void* get_directory_dependency(DirInfo& dir_info){
-		if (dir_info.flags.redirected){
-			auto directory_index = file_system.folder_offsets[dir_info.path.index].directory_index;
-			if (directory_index != 0xFFFFFF){
-				if (dir_info.flags.is_symlink) {
-					return &file_system.dir_infos[directory_index]; //Intermediate DirInfo ?
-				}
-				else {
-					return &file_system.folder_offsets[directory_index];
-				}
-			}
-			else {
-				return nullptr;
-			}
-		}
-		else {
-			return nullptr;
 		}
 	}
 

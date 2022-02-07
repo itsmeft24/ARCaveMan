@@ -12,10 +12,13 @@ namespace ARCaveMan {
 		static Hash40 from_str(std::string str) {
 			return { crc32(0, (unsigned char*)str.c_str(), str.size()), (uint32_t)str.size() };
 		}
-		//Hash40() { crc = 0; len = 0; }
+		
+		// Hash40() { crc = 0; len = 0; }
+		// Hash40(uint32_t _crc, uint32_t _len) { crc = _crc; len = _len; }
 		uint64_t as_u64()const {
 			return *(uint64_t*)this;
 		}
+		
 		bool operator ==(const Hash40& other) {
 			return other.crc == crc && other.len == len;
 		}

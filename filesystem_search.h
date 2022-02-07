@@ -3,6 +3,9 @@
 
 struct PathListEntry;
 struct FolderPathListEntry;
+
+// almost nothing in here is complete
+
 namespace ARCaveMan {
 
 struct SearchListEntry {
